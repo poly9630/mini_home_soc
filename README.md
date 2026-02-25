@@ -20,7 +20,7 @@ Quick install
 1. Change into the project directory:
 
 ```bash
-cd /home/polycap/Desktop/code
+cd /home/code
 ```
 
 2. Create a virtual environment (recommended) and activate it:
