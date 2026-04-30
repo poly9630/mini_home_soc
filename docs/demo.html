@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mini Home SOC Demo</title>
+  <style>
+    :root {
+      --bg: #eef3f6;
+      --panel: #fff;
+      --ink: #16212a;
+      --muted: #60707c;
+      --line: #d7e0e6;
+      --blue: #0d6efd;
+      --green: #198754;
+      --orange: #fd7e14;
+      --red: #dc3545;
+      --purple: #6f42c1;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .shell {
+      width: min(1180px, calc(100vw - 32px));
+      margin: 24px auto;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 28px; }
+    h2 { font-size: 18px; }
+    p { color: var(--muted); margin-top: 4px; }
+    button {
+      border: 0;
+      border-radius: 8px;
+      background: var(--blue);
+      color: #fff;
+      min-height: 40px;
+      padding: 0 16px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.4fr) minmax(320px, 0.8fr);
+      gap: 16px;
+    }
+    .panel, .stat {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: 0 2px 6px rgba(21, 35, 48, 0.06);
+    }
+    .panel { padding: 18px; }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .stat { padding: 14px 16px; }
+    .stat span { display: block; color: var(--muted); font-size: 13px; }
+    .stat strong { display: block; font-size: 24px; margin-top: 4px; }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 420px;
+      margin-top: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .issues {
+      display: grid;
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .issue {
+      border-left: 5px solid var(--blue);
+      background: #f8fafc;
+      padding: 12px;
+      border-radius: 6px;
+    }
+    .issue.critical { border-color: var(--red); }
+    .issue.security { border-color: var(--purple); }
+    .issue.logical { border-color: var(--orange); }
+    .issue strong { display: block; }
+    .badge {
+      display: inline-block;
+      margin-top: 8px;
+      margin-right: 6px;
+      padding: 3px 7px;
+      border-radius: 999px;
+      background: #e8eef3;
+      color: #354652;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .device-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 14px;
+      font-size: 14px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 10px 8px;
+      text-align: left;
+    }
+    th { color: var(--muted); font-size: 12px; text-transform: uppercase; }
+    @media (max-width: 880px) {
+      .grid, .stats, .topbar { grid-template-columns: 1fr; display: grid; }
+      canvas { height: 340px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <h1>Mini Home SOC</h1>
+        <p>Public dashboard demo with AI network diagnostics and topology mapping.</p>
+      </div>
+      <button id="rerun">Run AI Diagnostics</button>
+    </header>
+
+    <section class="stats">
+      <div class="stat"><span>Devices</span><strong id="deviceCount">0</strong></div>
+      <div class="stat"><span>Issues</span><strong id="issueCount">0</strong></div>
+      <div class="stat"><span>Gateway</span><strong>192.168.1.1</strong></div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Network Map</h2>
+        <p>Topology view generated from discovery, service, and traffic evidence.</p>
+        <canvas id="map" width="780" height="420"></canvas>
+      </div>
+      <aside class="panel">
+        <h2>AI Issue Detection</h2>
+        <p id="summary">Analyzing sample network evidence...</p>
+        <div id="issues" class="issues"></div>
+      </aside>
+    </section>
+
+    <section class="panel" style="margin-top:16px">
+      <h2>Connected Devices</h2>
+      <table class="device-table">
+        <thead><tr><th>IP</th><th>MAC</th><th>Hostname</th><th>Open Services</th></tr></thead>
+        <tbody id="devices"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script>
+    const sample = {
+      summary: "3 issue(s) found; 1 look physical and should alert an admin.",
+      network_map: {
+        gateway: "192.168.1.1",
+        nodes: [
+          { id: "192.168.1.1", label: "Gateway", role: "gateway", traffic_bytes: 0 },
+          { id: "192.168.1.12", label: "admin-laptop", role: "endpoint", traffic_bytes: 2401024, mac: "54:2a:a2:10:11:12", services: "HTTPS" },
+          { id: "192.168.1.25", label: "nas-storage", role: "endpoint", traffic_bytes: 62488120, mac: "70:85:c2:aa:bb:cc", services: "SSH, SMB" },
+          { id: "192.168.1.34", label: "front-camera", role: "camera/iot", traffic_bytes: 884120, mac: "bc:dd:c2:44:55:66", services: "HTTP admin" },
+          { id: "192.168.1.55", label: "printer", role: "printer", traffic_bytes: 124000, mac: "48:9e:bd:77:88:99", services: "None" }
+        ],
+        links: [
+          { source: "192.168.1.1", target: "192.168.1.12", type: "endpoint" },
+          { source: "192.168.1.1", target: "192.168.1.25", type: "endpoint" },
+          { source: "192.168.1.1", target: "192.168.1.34", type: "camera/iot" },
+          { source: "192.168.1.1", target: "192.168.1.55", type: "printer" }
+        ]
+      },
+      issues: [
+        {
+          title: "Gateway not visible",
+          severity: "critical",
+          category: "physical",
+          affected_device: "192.168.1.1",
+          recommendation: "Check router power, gateway address, switch uplink, or wireless isolation before trying software fixes.",
+          admin_alert: true
+        },
+        {
+          title: "Unusual traffic volume",
+          severity: "warning",
+          category: "logical",
+          affected_device: "192.168.1.25",
+          recommendation: "Review packet logs for backups, streaming, malware beacons, or repeated retries.",
+          auto_fix: true
+        },
+        {
+          title: "Risky management service exposed",
+          severity: "warning",
+          category: "security",
+          affected_device: "192.168.1.34",
+          recommendation: "Disable unused admin services or restrict them to trusted admin hosts.",
+          auto_fix: true
+        }
+      ]
+    };
+
+    document.querySelector("#rerun").addEventListener("click", render);
+    render();
+
+    function render() {
+      document.querySelector("#summary").textContent = sample.summary;
+      document.querySelector("#deviceCount").textContent = sample.network_map.nodes.length - 1;
+      document.querySelector("#issueCount").textContent = sample.issues.length;
+      renderIssues();
+      renderDevices();
+      drawMap();
+    }
+
+    function renderIssues() {
+      const list = document.querySelector("#issues");
+      list.innerHTML = "";
+      sample.issues.forEach(issue => {
+        const item = document.createElement("article");
+        item.className = `issue ${issue.severity} ${issue.category}`;
+        item.innerHTML = `<strong>${issue.title}</strong><p>${issue.affected_device || "Network-wide"} - ${issue.recommendation}</p>
+          ${issue.admin_alert ? '<span class="badge">admin alert</span>' : ''}
+          ${issue.auto_fix ? '<span class="badge">fix plan</span>' : ''}
+          <span class="badge">${issue.category}</span>`;
+        list.appendChild(item);
+      });
+    }
+
+    function renderDevices() {
+      const rows = sample.network_map.nodes.filter(n => n.role !== "gateway").map(n => `
+        <tr><td>${n.id}</td><td>${n.mac}</td><td>${n.label}</td><td>${n.services}</td></tr>
+      `).join("");
+      document.querySelector("#devices").innerHTML = rows;
+    }
+
+    function drawMap() {
+      const canvas = document.querySelector("#map");
+      const ctx = canvas.getContext("2d");
+      const width = canvas.width;
+      const height = canvas.height;
+      ctx.clearRect(0, 0, width, height);
+      const nodes = sample.network_map.nodes;
+      const gateway = nodes[0];
+      const endpoints = nodes.slice(1);
+      const center = { x: width / 2, y: height / 2 };
+      const radius = Math.min(width, height) * 0.34;
+      const placed = { [gateway.id]: { ...gateway, x: center.x, y: center.y } };
+      endpoints.forEach((node, index) => {
+        const angle = Math.PI * 2 * index / endpoints.length - Math.PI / 2;
+        placed[node.id] = { ...node, x: center.x + Math.cos(angle) * radius, y: center.y + Math.sin(angle) * radius };
+      });
+      sample.network_map.links.forEach(link => line(ctx, placed[link.source], placed[link.target]));
+      Object.values(placed).forEach(node => nodeCircle(ctx, node));
+    }
+
+    function line(ctx, a, b) {
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.strokeStyle = "#b6c2cf";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    function nodeCircle(ctx, node) {
+      const colors = { gateway: "#0d6efd", "camera/iot": "#fd7e14", printer: "#6f42c1", endpoint: "#198754" };
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, node.role === "gateway" ? 26 : 20, 0, Math.PI * 2);
+      ctx.fillStyle = colors[node.role] || "#198754";
+      ctx.fill();
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = "#fff";
+      ctx.stroke();
+      ctx.fillStyle = "#16212a";
+      ctx.font = "13px system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText(node.label, node.x, node.y + 42);
+      ctx.fillStyle = "#60707c";
+      ctx.fillText(node.role, node.x, node.y + 58);
+    }
+  </script>
+</body>
+</html>
