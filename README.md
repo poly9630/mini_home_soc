@@ -5,6 +5,9 @@ A small Home Network "Mini-SOC" that discovers devices on your local LAN, sniffs
 Features
 
 - ARP-based device discovery
+- Visual topology map for easier network visibility
+- AI-assisted issue detection using discovery, traffic, service, and port-scan evidence
+- Fix-plan guidance for logical/security issues and admin alerts for likely physical issues
 - Live packet capture (Scapy) with a browser UI (Flask)
 - Simple port-scan alerting and optional email alerts
 - Stores recent packets into a local SQLite database
@@ -49,8 +52,17 @@ Open your browser at http://localhost:5000
 Notes and configuration
 
 - Edit `mini_home_soc.py` to set `TARGET_SUBNET` to match your LAN.
+- Set `MINI_SOC_GATEWAY` if your gateway is not the first usable address in the subnet.
+- Set `MINI_SOC_TRAFFIC_ALERT_BYTES` to tune unusual traffic alerts. The default is `50000000`.
 - If you want email alerts, set `ALERT_EMAIL = True` and configure `SMTP_USER` and `SMTP_PASS`.
+- AI diagnostics reuse the same email alert helper. Critical security findings and likely physical issues alert the admin once per issue.
 - The app stores packet logs in `traffic.db`. Add `traffic.db` to `.gitignore` if you don't want to commit it.
+
+AI diagnostics API
+
+- `GET /api/network-map` returns nodes and links for the topology map.
+- `GET /api/ai-diagnostics` returns the issue summary, findings, fix guidance, and network map.
+- `GET /api/fix-plan/<issue_id>` returns the suggested safe remediation plan for a finding.
 
 Initialize a GitHub repository and push (optional)
 

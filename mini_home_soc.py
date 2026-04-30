@@ -20,11 +20,13 @@ except Exception as e:
     sys.exit(1)
 from scapy.all import ARP, Ether, srp, sniff, IP, TCP, UDP
 import socket
+from ai_diagnostics import analyze_network, build_network_map
 
 # --- Configuration ---
 TARGET_SUBNET = "192.168.1.0/24"  # CHANGE THIS to reflect your local network
 MAX_PACKETS = 100            # Max packets to keep in memory for UI
 PACKET_SNIFFER_FILTER = "not port 5000"  # Avoid capturing our web server traffic.
+SERVICE_SCAN_PORTS = [22, 23, 80, 443, 445, 3389, 5900, 8080]
 
 # Alerting Email Configuration (Optional: Edit if you want email alerts)
 ALERT_EMAIL = False  # Set to True if you want email alerts
@@ -39,6 +41,8 @@ packet_buffer = []            # Recent packets for UI
 traffic_stats = {}            # Bandwidth stats per device
 is_sniffing = True            # Sniffer running flag
 recent_ports = {}             # To detect port scans
+last_ai_report = {"summary": "No diagnostics have run yet.", "issues": [], "network_map": {}}
+alerted_issue_ids = set()     # Avoid repeated AI admin alerts for same finding
 
 # Disable verbose scapy logging
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
@@ -92,6 +96,19 @@ def get_hostname(ip):
     except socket.herror:
         return "Unknown"
 
+def scan_open_ports(ip):
+    """Lightweight TCP connect scan for common admin/service ports."""
+    open_ports = []
+    for port in SERVICE_SCAN_PORTS:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(0.35)
+        try:
+            if sock.connect_ex((ip, port)) == 0:
+                open_ports.append(port)
+        finally:
+            sock.close()
+    return open_ports
+
 def scan_network():
     """Sends ARP requests to discover devices on the local subnet."""
     global detected_devices
@@ -110,7 +127,8 @@ def scan_network():
         devices.append({
             'ip': received.psrc,
             'mac': received.hwsrc,
-            'hostname': get_hostname(received.psrc)
+            'hostname': get_hostname(received.psrc),
+            'open_ports': scan_open_ports(received.psrc)
         })
     
     detected_devices = devices
@@ -244,6 +262,44 @@ def get_logs():
     logs = [{'time': row[0], 'src': row[1], 'dst': row[2], 'protocol': row[3], 'length': row[4], 'service': row[5]} for row in rows]
     return jsonify(logs)
 
+@app.route('/api/network-map')
+def get_network_map():
+    """Return topology data for the dashboard map."""
+    return jsonify(build_network_map(detected_devices, TARGET_SUBNET, traffic_stats))
+
+@app.route('/api/ai-diagnostics')
+def get_ai_diagnostics():
+    """Return AI-assisted findings based on current SOC evidence."""
+    global last_ai_report, alerted_issue_ids
+    last_ai_report = analyze_network(detected_devices, traffic_stats, recent_ports, TARGET_SUBNET)
+    for issue in last_ai_report["issues"]:
+        if issue["admin_alert"] and issue["id"] not in alerted_issue_ids:
+            send_alert_email(
+                subject="Mini Home SOC admin alert: {}".format(issue["title"]),
+                body="{}\n\nAffected: {}\nEvidence: {}\nRecommendation: {}".format(
+                    last_ai_report["summary"],
+                    issue["affected_device"] or "Network-wide",
+                    "; ".join(issue["evidence"]),
+                    issue["recommendation"],
+                ),
+            )
+            alerted_issue_ids.add(issue["id"])
+    return jsonify(last_ai_report)
+
+@app.route('/api/fix-plan/<issue_id>')
+def get_fix_plan(issue_id):
+    """Return safe remediation guidance for a detected issue."""
+    report = analyze_network(detected_devices, traffic_stats, recent_ports, TARGET_SUBNET)
+    for issue in report["issues"]:
+        if issue["id"] == issue_id:
+            return jsonify({
+                "issue_id": issue_id,
+                "can_auto_fix": bool(issue.get("auto_fix")) and issue["category"] != "physical",
+                "plan": issue.get("auto_fix") or issue["recommendation"],
+                "requires_admin": issue["admin_alert"],
+            })
+    return jsonify({"error": "Issue not found"}), 404
+
 
 # --- Frontend UI Template ---
 
@@ -261,11 +317,44 @@ HTML_TEMPLATE = """
         .scroll-box { max-height: 200px; overflow-y: scroll; }
         .table-sm th, .table-sm td { font-size: 0.85rem; }
         .sticky-top { position: sticky; top: 0; background: #333; color: #fff; }
+        #network-map { width: 100%; min-height: 360px; border: 1px solid #d8dee4; border-radius: 6px; background: #fff; }
+        .issue-critical { border-left: 5px solid #dc3545; }
+        .issue-warning { border-left: 5px solid #ffc107; }
+        .issue-info { border-left: 5px solid #0dcaf0; }
+        .badge-physical { background: #dc3545; }
+        .badge-logical { background: #0d6efd; }
+        .badge-security { background: #6f42c1; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1 class="mb-4 text-primary">Home Network Mini-SOC</h1>
+
+        <!-- AI Diagnostics Section -->
+        <div class="row">
+            <div class="col-lg-7">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Network Map</h5>
+                        <button onclick="updateAIDiagnostics()" class="btn btn-sm btn-outline-primary">Run AI Diagnostics</button>
+                    </div>
+                    <div class="card-body">
+                        <canvas id="network-map" width="760" height="360"></canvas>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-5">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0">AI Issue Detection</h5>
+                    </div>
+                    <div class="card-body">
+                        <p id="ai-summary" class="text-muted">Diagnostics have not run yet.</p>
+                        <div id="ai-issues" class="list-group"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
 
         <!-- Devices Section -->
         <div class="card">
@@ -465,14 +554,115 @@ HTML_TEMPLATE = """
                 });
         }
 
+        function updateAIDiagnostics() {
+            fetch('/api/ai-diagnostics')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('ai-summary').textContent = data.summary;
+                    renderIssues(data.issues || []);
+                    renderNetworkMap(data.network_map || { nodes: [], links: [] });
+                });
+        }
+
+        function renderIssues(issues) {
+            const list = document.getElementById('ai-issues');
+            if (!issues.length) {
+                list.innerHTML = '<div class="list-group-item">No active issues detected.</div>';
+                return;
+            }
+            list.innerHTML = '';
+            issues.forEach(issue => {
+                const severityClass = issue.severity === 'critical' ? 'issue-critical' : issue.severity === 'warning' ? 'issue-warning' : 'issue-info';
+                const item = document.createElement('div');
+                item.className = `list-group-item ${severityClass}`;
+                item.innerHTML = `
+                    <div class="d-flex justify-content-between gap-2">
+                        <strong>${issue.title}</strong>
+                        <span class="badge badge-${issue.category}">${issue.category}</span>
+                    </div>
+                    <div class="small text-muted">${issue.affected_device || 'Network-wide'}</div>
+                    <p class="mb-1">${issue.recommendation}</p>
+                    ${issue.admin_alert ? '<span class="badge bg-danger">admin alert</span>' : ''}
+                    ${issue.auto_fix ? '<span class="badge bg-success">fix plan available</span>' : ''}
+                `;
+                list.appendChild(item);
+            });
+        }
+
+        function renderNetworkMap(map) {
+            const canvas = document.getElementById('network-map');
+            const ctx = canvas.getContext('2d');
+            const width = canvas.width;
+            const height = canvas.height;
+            ctx.clearRect(0, 0, width, height);
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(0, 0, width, height);
+
+            const nodes = map.nodes || [];
+            if (!nodes.length) {
+                ctx.fillStyle = '#6c757d';
+                ctx.font = '16px system-ui';
+                ctx.fillText('Run a scan to build the topology map.', 28, 42);
+                return;
+            }
+
+            const gateway = nodes.find(n => n.role === 'gateway') || nodes[0];
+            const endpoints = nodes.filter(n => n.id !== gateway.id);
+            const center = { x: width / 2, y: height / 2 };
+            const radius = Math.min(width, height) * 0.34;
+            const placed = {};
+            placed[gateway.id] = { ...gateway, x: center.x, y: center.y };
+            endpoints.forEach((node, index) => {
+                const angle = ((Math.PI * 2) / Math.max(1, endpoints.length)) * index - Math.PI / 2;
+                placed[node.id] = {
+                    ...node,
+                    x: center.x + Math.cos(angle) * radius,
+                    y: center.y + Math.sin(angle) * radius
+                };
+            });
+
+            (map.links || []).forEach(link => {
+                const source = placed[link.source];
+                const target = placed[link.target];
+                if (!source || !target) return;
+                ctx.beginPath();
+                ctx.moveTo(source.x, source.y);
+                ctx.lineTo(target.x, target.y);
+                ctx.strokeStyle = '#b6c2cf';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            });
+
+            Object.values(placed).forEach(node => drawMapNode(ctx, node));
+        }
+
+        function drawMapNode(ctx, node) {
+            const color = node.role === 'gateway' ? '#0d6efd' : node.role.includes('iot') ? '#fd7e14' : '#198754';
+            ctx.beginPath();
+            ctx.arc(node.x, node.y, node.role === 'gateway' ? 24 : 18, 0, Math.PI * 2);
+            ctx.fillStyle = color;
+            ctx.fill();
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 4;
+            ctx.stroke();
+            ctx.fillStyle = '#212529';
+            ctx.font = '12px system-ui';
+            ctx.textAlign = 'center';
+            ctx.fillText(node.label || node.id, node.x, node.y + 38);
+            ctx.fillStyle = '#6c757d';
+            ctx.fillText(node.role, node.x, node.y + 53);
+        }
+
         // Poll for updates at intervals
         setInterval(updateDevices, 5000);   // Update devices every 5 seconds
         setInterval(updatePackets, 1000);   // Update packets every 1 second
         setInterval(updateTrafficStats, 2000);  // Update bandwidth stats every 2 seconds
         setInterval(updateLogs, 10000);     // Update logs every 10 seconds
-        
+        setInterval(updateAIDiagnostics, 5000); // Refresh AI diagnostics every 5 seconds
+
         // Load everything initially
         triggerScan();
+        updateAIDiagnostics();
     </script>
 </body>
 </html>
