@@ -1,89 +1,132 @@
-# mini_home_soc
+# Mini Home SOC
 
-A small Home Network "Mini-SOC" that discovers devices on your local LAN, sniffs packets, provides simple traffic statistics, and serves a lightweight web UI.
+A home network Security Operations Centre (SOC) dashboard that discovers devices on your LAN, captures live traffic, and presents everything in a dark-theme web UI with real-time charts and AI-driven alerts.
 
-Features
+---
 
-- ARP-based device discovery
-- Visual topology map for easier network visibility
-- AI-assisted issue detection using discovery, traffic, service, and port-scan evidence
-- Fix-plan guidance for logical/security issues and admin alerts for likely physical issues
-- Live packet capture (Scapy) with a browser UI (Flask)
-- Simple port-scan alerting and optional email alerts
-- Stores recent packets into a local SQLite database
+## Features
 
-Prerequisites
+- **ARP device discovery** — scans the local subnet and lists every connected host with hostname, MAC, and open ports
+- **Live packet capture** — Scapy-powered sniffer with per-protocol colour coding
+- **Bandwidth over time** — line chart showing sent/received bytes per device at 10-second intervals
+- **Protocol distribution** — doughnut chart breaking down TCP / UDP / Other traffic in real time
+- **GeoIP enrichment** — external IP destinations are resolved to country flag, city, and ISP automatically
+- **DNS query log** — captures domain names resolved by every device on the network
+- **AI issue detection** — rule-based diagnostics flag port scans, exposed risky services, unusual traffic volumes, and missing gateway
+- **Fix-plan guidance** — safe remediation steps for every detected issue, with admin alerts for physical/critical findings
+- **SQLite persistence** — packet logs and DNS queries stored locally in `traffic.db`
+- **Optional email alerts** — SMTP notifications for critical findings
+- **Windows installer** — `install.bat` handles Python, Npcap, dependencies, and a desktop shortcut
 
-- Linux (recommended) with Python 3.8+
-- Root privileges to run packet sniffing (run with `sudo`)
-- `pip` for installing Python dependencies
+---
 
-Quick install
+## Dashboard
 
-1. Change into the project directory:
+The browser UI is served at **http://127.0.0.1:5000** and has five sections:
+
+| Section | What you see |
+|---|---|
+| **Overview** | Stat tiles, bandwidth chart, protocol chart, latest issues |
+| **Devices** | Full device inventory with role, open ports, and traffic totals |
+| **Live Traffic** | Real-time packet stream with GeoIP flags, top talkers, stored history |
+| **DNS Logs** | Per-device domain resolution log |
+| **Alerts** | AI diagnostic report with severity badges and fix guidance |
+
+---
+
+## Prerequisites
+
+| Requirement | Notes |
+|---|---|
+| Python 3.8+ | 3.10+ recommended |
+| [Npcap](https://npcap.com/#download) (Windows) | Required for Scapy packet capture; install in WinPcap-compatible mode |
+| libpcap / tcpdump (Linux/macOS) | Usually pre-installed |
+| Admin / root privileges | Required for raw socket access |
+
+---
+
+## Windows — Quick Install
+
+1. Download or clone this repository.
+2. Right-click **`install.bat`** → **Run as administrator**.
+3. The installer will:
+   - Verify Python is installed (installs via `winget` if missing)
+   - Check for Npcap (provides download link if missing)
+   - Run `pip install -r requirements.txt`
+   - Create **`launch.bat`** and a **Desktop shortcut**
+4. Double-click **Mini Home SOC** on the Desktop to launch.
+
+> The app auto-elevates to admin when launched via `launch.bat` — required for Scapy to open raw sockets on Windows.
+
+---
+
+## Linux / macOS — Quick Install
 
 ```bash
-cd /home/code
-```
+# Clone
+git clone https://github.com/poly9630/mini_home_soc.git
+cd mini_home_soc
 
-2. Create a virtual environment (recommended) and activate it:
+# Install dependencies
+pip3 install -r requirements.txt
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-3. Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-Run
-
-Run the application (requires root for packet sniffing):
-
-```bash
+# Run (root required for packet sniffing)
 sudo python3 mini_home_soc.py
 ```
 
-Open your browser at http://localhost:5000
+Open **http://localhost:5000** in your browser.
 
-Notes and configuration
+---
 
-- Edit `mini_home_soc.py` to set `TARGET_SUBNET` to match your LAN.
-- Set `MINI_SOC_GATEWAY` if your gateway is not the first usable address in the subnet.
-- Set `MINI_SOC_TRAFFIC_ALERT_BYTES` to tune unusual traffic alerts. The default is `50000000`.
-- If you want email alerts, set `ALERT_EMAIL = True` and configure `SMTP_USER` and `SMTP_PASS`.
-- AI diagnostics reuse the same email alert helper. Critical security findings and likely physical issues alert the admin once per issue.
-- The app stores packet logs in `traffic.db`. Add `traffic.db` to `.gitignore` if you don't want to commit it.
+## Configuration
 
-AI diagnostics API
+Edit the constants near the top of `mini_home_soc.py`:
 
-- `GET /api/network-map` returns nodes and links for the topology map.
-- `GET /api/ai-diagnostics` returns the issue summary, findings, fix guidance, and network map.
-- `GET /api/fix-plan/<issue_id>` returns the suggested safe remediation plan for a finding.
+| Variable | Default | Description |
+|---|---|---|
+| `TARGET_SUBNET` | `192.168.1.0/24` | Your LAN subnet — **change this first** |
+| `ALERT_EMAIL` | `False` | Set to `True` to enable email alerts |
+| `SMTP_USER` / `SMTP_PASS` | — | Gmail address and App Password for alerts |
+| `SERVICE_SCAN_PORTS` | common ports | Ports checked during device discovery |
+| `MAX_PACKETS` | `100` | In-memory packet buffer size |
 
-Initialize a GitHub repository and push (optional)
+Environment variable overrides (no code edit needed):
 
-If you have the GitHub CLI (`gh`) configured locally you can create and push a public repo with:
+| Variable | Description |
+|---|---|
+| `MINI_SOC_GATEWAY` | Override gateway IP if not the first host in the subnet |
+| `MINI_SOC_TRAFFIC_ALERT_BYTES` | Bytes threshold for unusual traffic alert (default `50000000`) |
 
-```bash
-gh repo create <USERNAME>/<REPO> --public --source=. --remote=origin --push
-```
+---
 
-Or create a repo on GitHub and push:
+## API Reference
 
-```bash
-git remote add origin git@github.com:USERNAME/REPO.git
-git branch -M main
-git push -u origin main
-```
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/devices` | Discovered devices list |
+| `POST` | `/api/scan` | Trigger a new ARP scan |
+| `GET` | `/api/packets` | Recent packet buffer |
+| `GET` | `/api/stats` | Per-IP bandwidth totals |
+| `GET` | `/api/logs` | Last 50 packets from SQLite |
+| `GET` | `/api/dns-logs` | Recent DNS queries |
+| `GET` | `/api/protocol-stats` | TCP / UDP / Other packet counts |
+| `GET` | `/api/bandwidth-history` | Time-series bandwidth snapshots (10 s intervals) |
+| `GET` | `/api/geoip/<ip>` | GeoIP lookup for an external IP |
+| `GET` | `/api/network-map` | Topology nodes and links |
+| `GET` | `/api/ai-diagnostics` | Full diagnostic report with issues and network map |
+| `GET` | `/api/fix-plan/<issue_id>` | Remediation plan for a specific issue |
 
-Security & permissions
+---
 
-- Packet sniffing and ARP scanning require elevated privileges — run carefully and only on networks you own or have permission to scan.
+## Security & Legal
 
-License
+- Only run this tool on networks **you own or have explicit permission to monitor**.
+- Packet sniffing and ARP scanning are intrusive by nature — use responsibly.
+- GeoIP lookups are sent to [ip-api.com](http://ip-api.com) (free tier, no API key required). External IPs only; private addresses are never sent.
+- `traffic.db` contains captured packet metadata — add it to `.gitignore` if you do not want it committed.
 
-This project is provided under the MIT License. See LICENSE for details.
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE) for details.
